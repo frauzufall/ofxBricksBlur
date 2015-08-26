@@ -11,10 +11,17 @@ protected:
 	float scale, rotation;
 	float downsample;
 	float brightness;
+	ofParameter<int> brickrows;
+	ofParameter<int> brickcols;
+	ofParameter<float> brickoffset;
 public:
 	ofxBlur();
 
 	void setup(int width, int height, int radius = 32, float shape = .2, int passes = 1, float downsample = .5);
+
+	ofParameter<int> &brickRows();
+	ofParameter<int> &brickCols();
+	ofParameter<float> &brickOffset();
 
 	void setScale(float scale);
 	void setRotation(float rotation);
@@ -23,7 +30,7 @@ public:
 	void begin();
 	void end();
 	void draw();
-    void draw(ofRectangle rect);
+	void draw(ofRectangle rect);
 
 	ofTexture& getTextureReference();
 };

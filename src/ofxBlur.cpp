@@ -23,22 +23,22 @@ string generateBlurSource(int radius, float shape) {
 	// normalize row and coefficients
 	vector<float> coefficients;
 	float sum = 0;
-	for(int i = 0; i < row.size(); i++) {
+	for(unsigned int i = 0; i < row.size(); i++) {
 		sum += row[i];
 	}
-	for(int i = 0; i < row.size(); i++) {
+	for(unsigned int i = 0; i < row.size(); i++) {
 		row[i] /= sum;
 	}
 	int center = row.size() / 2;
 	coefficients.push_back(row[center]);
-	for(int i = center + 1; i < row.size(); i += 2) {
+	for(int i = center + 1; i < (int)row.size(); i += 2) {
 		float weightSum = row[i] + row[i + 1];
 		coefficients.push_back(weightSum);
 	}
 
 	// generate offsets
 	vector<float> offsets;
-	for(int i = center + 1; i < row.size(); i += 2) {
+	for(int i = center + 1; i < (int)row.size(); i += 2) {
 		int left = i - center;
 		int right = left + 1;
 		float leftVal = row[i];
@@ -53,14 +53,48 @@ string generateBlurSource(int radius, float shape) {
 	src << "#extension GL_ARB_texture_rectangle : enable\n";
 	src << "uniform sampler2DRect source;\n";
 	src << "uniform vec2 direction;\n";
+	src << "uniform vec2 resolution;\n";
+	src << "uniform int brickrows;\n";
+	src << "uniform int brickcols;\n";
+	src << "uniform float brickoffset;\n";
 	src << "void main(void) {\n";
 	src << "\tvec2 tc = gl_TexCoord[0].st;\n";
+	src << "\tfloat brick_w = resolution.x/brickcols;\n";
+	src << "\tfloat brick_h = resolution.y/brickrows;\n";
+	src << "\tfloat x_min = int(tc.x/brick_w)*brick_w;\n";
+	src << "\tfloat x_max = (1+int(tc.x/brick_w))*brick_w;\n";
+	src << "\tif(mod(int(tc.y/brick_h),2) == 0){";
+	src << "\t\tx_min = int((tc.x-brick_w*brickoffset)/brick_w)*brick_w+brick_w*brickoffset;\n";
+	src << "\t\tx_max = (1+int((tc.x-brick_w*brickoffset)/brick_w))*brick_w+brick_w*brickoffset;\n";
+	src << "\t}";
+	src << "\tfloat y_min = int(tc.y/brick_h)*brick_h;\n";
+	src << "\tfloat y_max = (1+int(tc.y/brick_h))*brick_h;\n";
 	src << "\tgl_FragColor = " << coefficients[0] << " * texture2DRect(source, tc);\n";
-	for(int i = 1; i < coefficients.size(); i++) {
+	for(unsigned int i = 1; i < coefficients.size(); i++) {
 		int curOffset = i - 1;
-		src << "\tgl_FragColor += " << coefficients[i] << " * \n";
-		src << "\t\t(texture2DRect(source, tc - (direction * " << offsets[i - 1] << ")) + \n";
-		src << "\t\ttexture2DRect(source, tc + (direction * " << offsets[i - 1] << ")));\n";
+		src << "\tvec2 pos" << i << "_1 = tc - (direction * " << offsets[i - 1] << ");\n";
+		src << "\tvec2 pos" << i << "_2 = tc + (direction * " << offsets[i - 1] << ");\n";
+		src << "\tint usepos" << i << "_1 = 1;\n";
+		src << "\tint usepos" << i << "_2 = 1;\n";
+		src << "\tif(pos" << i << "_1.x < x_min || pos" << i << "_1.x > x_max || pos" << i << "_1.y < y_min || pos" << i << "_1.y > y_max){usepos" << i << "_1 = 0;}\n";
+		src << "\tif(pos" << i << "_2.x < x_min || pos" << i << "_2.x > x_max || pos" << i << "_2.y < y_min || pos" << i << "_2.y > y_max){usepos" << i << "_2 = 0;}\n";
+		src << "\tif(usepos" << i << "_1 == 1 && usepos" << i << "_2 == 1){\n";
+		src << "\t\tgl_FragColor += " << coefficients[i] << " * \n";
+		src << "\t\t\t(texture2DRect(source, pos" << i << "_1) + \n";
+		src << "\t\t\ttexture2DRect(source, pos" << i << "_2));\n";
+		src << "\t}else if(usepos" << i << "_1 == 1 && usepos" << i << "_2 == 0){\n";
+		src << "\t\tgl_FragColor += " << coefficients[i] << " * \n";
+		src << "\t\t\t(texture2DRect(source, pos" << i << "_1) + \n";
+		src << "\t\t\ttexture2DRect(source, tc));\n";
+		src << "\t}else if(usepos" << i << "_1 == 0 && usepos" << i << "_2 == 1){\n";
+		src << "\t\tgl_FragColor += " << coefficients[i] << " * \n";
+		src << "\t\t\t(texture2DRect(source, tc) + \n";
+		src << "\t\t\ttexture2DRect(source, pos" << i << "_2));\n";
+		src << "\t}else{\n";
+		src << "\t\tgl_FragColor += " << coefficients[i] << " * \n";
+		src << "\t\t\t(texture2DRect(source, tc) + \n";
+		src << "\t\t\ttexture2DRect(source, tc));\n";
+		src << "\t}\n";
 	}
 	src << "}\n";
 
@@ -98,7 +132,10 @@ string generateCombineSource(int passes, float downsample) {
 ofxBlur::ofxBlur()
 :scale(1)
 ,rotation(0)
-,brightness(1) {
+,brightness(1)
+,brickcols(10)
+,brickrows(10)
+,brickoffset(0.5){
 }
 
 void ofxBlur::setup(int width, int height, int radius, float shape, int passes, float downsample) {
@@ -186,6 +223,10 @@ void ofxBlur::end() {
 		blurShader.begin();
 		blurShader.setUniformTexture("source", curPing.getTextureReference(), 0);
 		blurShader.setUniform2f("direction", xDirection.x, xDirection.y);
+		blurShader.setUniform1i("brickrows", brickrows.get());
+		blurShader.setUniform1i("brickcols", brickcols.get());
+		blurShader.setUniform1f("brickoffset", brickoffset.get());
+		blurShader.setUniform2f("resolution", base.getWidth(), base.getHeight());
 		curPing.draw(0, 0);
 		blurShader.end();
 		curPong.end();
@@ -195,6 +236,10 @@ void ofxBlur::end() {
 		blurShader.begin();
 		blurShader.setUniformTexture("source", curPong.getTextureReference(), 0);
 		blurShader.setUniform2f("direction", yDirection.x, yDirection.y);
+		blurShader.setUniform1i("brickrows", brickrows.get());
+		blurShader.setUniform1i("brickcols", brickcols.get());
+		blurShader.setUniform1f("brickoffset", brickoffset.get());
+		blurShader.setUniform2f("resolution", base.getWidth(), base.getHeight());
 		curPong.draw(0, 0);
 		blurShader.end();
 		curPing.end();
@@ -243,4 +288,16 @@ void ofxBlur::draw() {
 
 void ofxBlur::draw(ofRectangle rect) {
     base.draw(rect);
+}
+
+ofParameter<int>& ofxBlur::brickCols(){
+	return brickcols;
+}
+
+ofParameter<int>& ofxBlur::brickRows(){
+	return brickrows;
+}
+
+ofParameter<float>& ofxBlur::brickOffset(){
+	return brickoffset;
 }
